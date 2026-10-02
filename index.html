@@ -1,0 +1,196 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TwoHearts Chat</title>
+<style>
+body{margin:0;background:#15121d;color:white;font-family:Arial,sans-serif}
+main{max-width:500px;margin:auto;padding:22px}
+h1{color:#ff80ab;text-align:center}
+p{color:#ccc;text-align:center}
+input,button{box-sizing:border-box;width:100%;padding:14px;margin:7px 0;border:0;border-radius:10px;font-size:16px}
+input{background:#292333;color:white}
+button{background:#ff80ab;color:#241521;font-weight:bold}
+#chat{display:none}
+#messages{height:48vh;overflow:auto;background:#211b2b;padding:12px;border-radius:12px}
+.msg{background:#393044;padding:10px;border-radius:10px;margin:8px 0;overflow-wrap:anywhere}
+.mine{background:#70435f}
+small{color:#ddd}
+#status{font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<h1>♡ TwoHearts ♡</h1>
+<p>A little space for two hearts.</p>
+<div id="setup">
+<button id="create">Create private chat</button>
+<input id="code" placeholder="Enter partner's invite code">
+<button id="join">Join chat</button>
+<p id="status">Connecting...</p>
+</div>
+<div id="chat">
+<p>Invite code: <b id="invite"></b></p>
+<button id="copy">Copy invite code</button>
+<div id="messages"></div>
+<input id="message" placeholder="Type a message...">
+<button id="send">Send message</button>
+<button id="back">Leave chat on this device</button>
+</div>
+</main>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyDW4h8iNOyEdrkMmHTpCV-rgMsSTz5Qtbg",
+  authDomain: "twohearts-42d71.firebaseapp.com",
+  projectId: "twohearts-42d71",
+  storageBucket: "twohearts-42d71.firebasestorage.app",
+  messagingSenderId: "323128133722",
+  appId: "1:323128133722:web:e5004dca0c769bb73ef063"
+};
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+let uid = null;
+let roomId = null;
+let unsubscribe = null;
+
+const status = document.getElementById("status");
+const setup = document.getElementById("setup");
+const chat = document.getElementById("chat");
+const messages = document.getElementById("messages");
+
+auth.signInAnonymously().catch(error => {
+  status.textContent = "Connection error: " + error.message;
+});
+
+auth.onAuthStateChanged(user => {
+  if (user) {
+    uid = user.uid;
+    status.textContent = "Ready! Create a chat or enter an invite code.";
+  }
+});
+
+function openChat(id) {
+  roomId = id;
+  document.getElementById("invite").textContent = id;
+  setup.style.display = "none";
+  chat.style.display = "block";
+  messages.innerHTML = "";
+
+  if (unsubscribe) unsubscribe();
+
+  unsubscribe = db.collection("rooms").doc(id)
+    .collection("messages")
+    .orderBy("createdAt")
+    .limit(100)
+    .onSnapshot(snapshot => {
+      messages.innerHTML = "";
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        const item = document.createElement("div");
+        item.className = "msg" + (data.senderId === uid ? " mine" : "");
+        const who = document.createElement("small");
+        who.textContent = data.senderId === uid ? "You" : "Partner";
+        const body = document.createElement("div");
+        body.textContent = data.text;
+        item.append(who, body);
+        messages.appendChild(item);
+      });
+      messages.scrollTop = messages.scrollHeight;
+    }, error => {
+      alert("Message error: " + error.message);
+    });
+}
+
+document.getElementById("create").onclick = async () => {
+  if (!uid) return alert("Please wait for connection.");
+  try {
+    const id = Array.from(
+      crypto.getRandomValues(new Uint8Array(16)),
+      b => b.toString(16).padStart(2, "0")
+    ).join("");
+    await db.collection("rooms").doc(id).set({
+      members: [uid],
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    openChat(id);
+  } catch (e) {
+    alert("Could not create chat: " + e.message);
+  }
+};
+
+document.getElementById("join").onclick = async () => {
+  if (!uid) return alert("Please wait for connection.");
+  const id = document.getElementById("code").value.trim().toLowerCase();
+  if (!/^[a-f0-9]{32}$/.test(id)) {
+    return alert("Enter the complete invite code.");
+  }
+  try {
+    const ref = db.collection("rooms").doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return alert("Chat not found. Check the code.");
+    const members = snap.data().members || [];
+    if (members.includes(uid)) {
+      openChat(id);
+    } else if (members.length >= 2) {
+      alert("This chat already has two members.");
+    } else {
+      await ref.update({
+        members: firebase.firestore.FieldValue.arrayUnion(uid)
+      });
+      openChat(id);
+    }
+  } catch (e) {
+    alert("Could not join: " + e.message);
+  }
+};
+
+document.getElementById("send").onclick = async () => {
+  const field = document.getElementById("message");
+  const text = field.value.trim();
+  if (!text || !roomId || !uid) return;
+  field.value = "";
+  try {
+    await db.collection("rooms").doc(roomId)
+      .collection("messages").add({
+        text: text,
+        senderId: uid,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+  } catch (e) {
+    field.value = text;
+    alert("Message could not send: " + e.message);
+  }
+};
+
+document.getElementById("message").addEventListener("keydown", e => {
+  if (e.key === "Enter") document.getElementById("send").click();
+});
+
+document.getElementById("copy").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(roomId);
+    alert("Invite code copied!");
+  } catch {
+    prompt("Copy this invite code:", roomId);
+  }
+};
+
+document.getElementById("back").onclick = () => {
+  if (unsubscribe) unsubscribe();
+  roomId = null;
+  chat.style.display = "none";
+  setup.style.display = "block";
+  messages.innerHTML = "";
+};
+</script>
+</body>
+</html>
